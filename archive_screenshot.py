@@ -10,8 +10,18 @@ from pyppeteer import launch
 from pyppeteer import errors
 import logging
 
+'''
+todo
+add flag for pyppeteer's dumpio=, so that the output doesnt have so much garbage
+grouping the individual calls of click_button may increase performance
+log better
+more columns for why screenshot failed, timeout/page error/network error
+add "screenshot unsuccessful for id:" + url_id
+'''
 
-def screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, timeout_duration, lazy, be_lazy, banner):
+
+def screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, timeout_duration, lazy, be_lazy,
+                   banner, async_num):
     """Fetches urls from the input CSV and takes a screenshot
 
     Parameters
@@ -37,44 +47,60 @@ def screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, 
 
     with open(csv_in_name, 'r') as csv_file_in:
         csv_reader = csv.reader(csv_file_in)
+        next(csv_reader)  # skip header
         with open(csv_out_name, 'w+') as csv_file_out:
             csv_writer = csv.writer(csv_file_out, delimiter=',', quoting=csv.QUOTE_ALL)
             csv_writer.writerow(
                 ["archive_id", "url_id", "date", "url", "site_status", "site_message", "screenshot_message"])
 
-            count = 0
             compare = '0'
-            for line in csv_reader:
-                if count == 0:      # skip the header
-                    count += 1
-                    continue
+            multiple_url_details = []
+            while True:
+                try:
+                    line = next(csv_reader)  # if last line then will be caught by except
 
-                archive_id = str(line[0])
-                url_id = line[1]
-                date = line[2]
-                url = line[3]
+                    archive_id = str(line[0])
+                    url_id = line[1]
+                    date = line[2]
+                    url = line[3]
 
-                if url == "":
-                    continue
+                    if url == "":
+                        continue
 
-                if be_lazy is True:  # makes running faster by not doing hundreds of archive sites
-                    if url_id != compare:
-                        count = 0
-                        compare = url_id
-                    else:
-                        count += 1
-                        if count > lazy:
+                    if be_lazy is True:  # makes running faster by not doing hundreds of archive sites
+                        if url_id != compare:
+                            count = 0
+                            compare = url_id
+                        else:
+                            count += 1
+                            if count > lazy:
+                                continue
+
+                    if len(multiple_url_details) < async_num:
+                        multiple_url_details.append([archive_id, url_id, date, url])
+                        if len(multiple_url_details) < async_num:
                             continue
 
-                print("\nurl #{0} {1}".format(url_id, url))
-                logging.info("url #{0} {1}".format(url_id, url))
+                    url_status_dict = \
+                        take_screenshot(multiple_url_details, pics_out_path, screenshot_method, timeout_duration, banner)
+                    for url_detail in multiple_url_details:
+                        url_id = url_detail[1]
+                        return_messages = url_status_dict[url_id]
+                        csv_writer.writerow([url_detail[0], url_id, url_detail[2], url_detail[3],
+                                             return_messages[0], return_messages[1], return_messages[2]])
 
-                site_status, site_message, screenshot_message = \
-                    take_screenshot(archive_id, url_id, date, url, pics_out_path, screenshot_method,
-                                    timeout_duration, banner)
+                    multiple_url_details = []
 
-                csv_writer.writerow([archive_id, url_id, date, url, site_status, site_message, screenshot_message])
-
+                except StopIteration:
+                    if len(multiple_url_details) != 0:
+                        url_status_dict = \
+                            take_screenshot(multiple_url_details, pics_out_path, screenshot_method, timeout_duration, banner)
+                        for i in range(len(multiple_url_details)):
+                            url_id = url_detail[1]
+                            return_messages = url_status_dict[url_id]
+                            csv_writer.writerow([url_detail[0], url_id, url_detail[2], url_detail[3],
+                                                 return_messages[0], return_messages[1], return_messages[2]])
+                    break
 
 def screenshot_db(csv_out_name, pics_out_path, screenshot_method, make_csv, timeout_duration, lazy, be_lazy, banner):
     """Fetches urls from the input DB and takes a screenshot
@@ -152,7 +178,7 @@ def screenshot_db(csv_out_name, pics_out_path, screenshot_method, make_csv, time
         csv_file_out.close()
 
 
-def take_screenshot(archive_id, url_id, date, url, pics_out_path, screenshot_method, timeout_duration, banner):
+def take_screenshot(multiple_url_details, pics_out_path, screenshot_method, timeout_duration, banner):
     """Calls the function or command to take a screenshot
 
     Parameters
@@ -181,43 +207,67 @@ def take_screenshot(archive_id, url_id, date, url, pics_out_path, screenshot_met
 
     """
 
-    site_status, site_message = check_site_availability(url)
-    if site_status == "FAIL":
-        return site_status, site_message, "Screenshot unsuccessful"
+    url_status_dict = {}                # maps each url_id to the site messages
+    multiple_url_details_temp = multiple_url_details[:]  # the list to be passed into puppeteer_screenshot
 
-    if screenshot_method == 0:
-        return site_status, site_message, chrome_screenshot(pics_out_path, archive_id, url_id, date, url, timeout_duration)
-    elif screenshot_method == 2:
-        return site_status, site_message, cutycapt_screenshot(pics_out_path, archive_id, url_id, date, url, timeout_duration)
+    if screenshot_method == 1:
+        for id_list in multiple_url_details:
+            url_id = id_list[1]
+            url = id_list[2]
 
-    elif screenshot_method == 1:
-        try:
-            asyncio.get_event_loop().run_until_complete(
-                puppeteer_screenshot(archive_id, url_id, date, url, pics_out_path, timeout_duration, banner))
-            logging.info("Screenshot successful")
-            print("Screenshot successful")
-            return site_status, site_message, "Screenshot successful"
-        except errors.TimeoutError as e:
-            print(e)
-            logging.info(e)
-            return site_status, site_message, e
-        except errors.NetworkError as e:
-            print(e)
-            logging.info(e)
-            return site_status, site_message, e
-        except errors.PageError as e:
-            print(e)
-            logging.info(e)
-            return site_status, site_message, e
-        except Exception as e:
-            print(e)
-            logging.info(e)
-            return site_status, site_message, e
+            print("\nurl #{0} {1}".format(url_id, url))
+            logging.info("url #{0} {1}".format(url_id, url))
 
-    return None, None, None  # assumes the user entered 0,1,2 as method
+            site_status, site_message = check_site_availability(url)
+            if site_status == "FAIL":           # if the url cannot be reached
+                url_status_dict[url_id] = [site_status, site_message, "Screenshot unsuccessful"]
+                multiple_url_details_temp.remove(id_list)       # remove cuz this url does not need screenshot taken
+                logging.info(site_message)
+                print("Screenshot unsuccessful")
+            else:    # list does not include successfulness cuz it will be determined by puppeteer_screenshot
+                url_status_dict[url_id] = [site_status, site_message]
+
+        if len(multiple_url_details_temp) == 0:     # if none of the urls can be reached
+            return url_status_dict     # then dont need to bother trying to take screenshots
+
+        loop = asyncio.get_event_loop()
+        task = asyncio.gather(*(puppeteer_screenshot(details, pics_out_path, timeout_duration, banner)
+                                for details in multiple_url_details), loop=None, return_exceptions=True)
+        result = loop.run_until_complete(task)
+
+        for return_message in result:  # map the results to its respective url_id
+            url_id = return_message[0]
+            returned_error = return_message[1]
+            if type(errors.TimeoutError) == type(returned_error):
+                url_status_dict[url_id].append("Screenshot unsuccessful")
+                logging.info(str(returned_error))
+                print("Screenshot unsuccessful")
+            elif type(errors.NetworkError) == type(returned_error):
+                url_status_dict[url_id].append("Screenshot unsuccessful")
+                logging.info(str(returned_error))
+                print("Screenshot unsuccessful")
+            elif type(errors.PageError) == type(returned_error):
+                url_status_dict[url_id].append("Screenshot unsuccessful")
+                logging.info(str(returned_error))
+                print("Screenshot unsuccessful")
+            elif type(Exception) == type(returned_error):
+                url_status_dict[url_id].append("Screenshot unsuccessful")
+                logging.info(str(returned_error))
+                print("Screenshot unsuccessful")
+            else:
+                url_status_dict[url_id].append("Screenshot successful")
+                logging.info("Screenshot successful")
+                print("Screenshot successful")
+
+    # todo
+    # if screenshot_method == 0:
+    #     return site_status, site_message, chrome_screenshot(pics_out_path, archive_id, url_id, date, url, timeout_duration)
+    # elif screenshot_method == 2:
+    #     return site_status, site_message, cutycapt_screenshot(pics_out_path, archive_id, url_id, date, url, timeout_duration)
+    return url_status_dict
 
 
-async def puppeteer_screenshot(archive_id, url_id, date, url, pics_out_path, timeout_duration, banner):
+async def puppeteer_screenshot(url_details, pics_out_path, timeout_duration, banner):
     """Take screenshot using the pyppeteer package.
 
     Parameters
@@ -242,10 +292,12 @@ async def puppeteer_screenshot(archive_id, url_id, date, url, pics_out_path, tim
     .. [1] https://pypi.org/project/pyppeteer/
 
     """
+    archive_id, url_id, date, url = url_details[0], url_details[1], url_details[2], url_details[3],
 
-    browser = await launch(headless=True, dumpio=True)
-    page = await browser.newPage()
     try:
+        browser = await launch(headless=True, dumpio=True)
+        page = await browser.newPage()
+
         await page.setViewport({'height': 768, 'width': 1024})
         await page.goto(url, timeout=(int(timeout_duration) * 1000))
 
@@ -424,6 +476,8 @@ def parse_args():
     parser.add_argument("--lazy", type=int, help="(optional) Continues to the next archive after taking n pictures")
     parser.add_argument("--banner", action='store_true',
                         help="(optional) Include to keep banner, default removes banner")
+    parser.add_argument("--async", type=int, help="(optional) Specify the number of coroutines, "
+                                                  "default 1 coroutine, ")
 
     args = parser.parse_args()
 
@@ -447,6 +501,11 @@ def parse_args():
     pics_out_path = args.picsout + '/'
     screenshot_method = int(args.method)
     banner = args.banner
+
+    if args.async is None:
+        async_num = 1
+    else:
+        async_num = args.async
 
     if args.csv is not None:
         csv_in_name = args.csv
@@ -479,7 +538,7 @@ def parse_args():
         lazy = None
 
     return csv_in_name, csv_out_name, pics_out_path, screenshot_method, use_csv, use_db, make_csv, \
-        timeout_duration, lazy, be_lazy, banner
+        timeout_duration, lazy, be_lazy, banner, async_num
 
 
 def connect_sql(path):
@@ -518,11 +577,12 @@ def set_up_logging(pics_out_path):
 
 def main():
     csv_in_name, csv_out_name, pics_out_path, screenshot_method, use_csv, use_db, make_csv, timeout_duration, lazy, \
-        be_lazy, banner = parse_args()
+        be_lazy, banner, async_num = parse_args()
     set_up_logging(pics_out_path)
     print("Taking screenshots")
     if use_csv:
-        screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, timeout_duration, lazy, be_lazy, banner)
+        screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, timeout_duration, lazy, be_lazy,
+                       banner, async_num)
     if use_db:
         screenshot_db(csv_out_name, pics_out_path, screenshot_method, make_csv, timeout_duration, lazy, be_lazy, banner)
 

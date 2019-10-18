@@ -11,7 +11,7 @@ from pyppeteer import errors
 import logging
 
 
-def screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, timeout_duration):
+def screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, timeout_duration, async_num):
     """Fetches urls from the input CSV and takes a screenshot
 
     Parameters
@@ -29,29 +29,52 @@ def screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, 
 
     """
 
+    # async = 3: time = 16
+    # async = 1: time = 38 min
+
     with open(csv_in_name, 'r') as csv_file_in:
         csv_reader = csv.reader(csv_file_in)
+        next(csv_reader)  # skip header
         with open(csv_out_name, 'w+') as csv_file_out:
             csv_writer = csv.writer(csv_file_out, delimiter=',', quoting=csv.QUOTE_ALL)
             csv_writer.writerow(["archive_id", "url_id", "url", "site_status", "site_message", "screenshot_message"])
 
-            count = 0
-            for line in csv_reader:
-                if count == 0:      # skip the header
-                    count += 1
-                    continue
+            multiple_url_details = []
+            while True:
+                try:
+                    line = next(csv_reader)  # if last line then will be caught by except
 
-                archive_id = line[0]
-                url_id = line[1]
-                url = line[2]
+                    archive_id = line[0]
+                    url_id = line[1]
+                    url = line[2]
 
-                print("\nurl #{0} {1}".format(url_id, url))
-                logging.info("url #{0} {1}".format(url_id, url))
+                    if len(multiple_url_details) < async_num:
+                        multiple_url_details.append([archive_id, url_id, url])
+                        if len(multiple_url_details) < async_num:
+                            continue
 
-                site_status, site_message, screenshot_message = \
-                    take_screenshot(archive_id, url_id, url, pics_out_path, screenshot_method, timeout_duration)
+                    url_status_dict = \
+                        take_screenshot(multiple_url_details, pics_out_path, screenshot_method, timeout_duration)
+                    for url_detail in multiple_url_details:
+                        url_id = url_detail[1]
+                        return_messages = url_status_dict[url_id]
+                        csv_writer.writerow([url_detail[0], url_id, url_detail[2],
+                                             return_messages[0], return_messages[1], return_messages[2]])
 
-                csv_writer.writerow([archive_id, url_id, url, site_status, site_message, screenshot_message])
+                    multiple_url_details = []
+
+                except StopIteration:
+                    # deal with the remaining urls
+                    if len(multiple_url_details) != 0:
+                        url_status_dict = \
+                            take_screenshot(multiple_url_details, pics_out_path, screenshot_method, timeout_duration)
+                        for url_detail in multiple_url_details:
+                            url_id = url_detail[1]
+                            return_messages = url_status_dict[url_id]
+                            csv_writer.writerow([url_detail[0], url_id, url_detail[2],
+                                                 return_messages[0], return_messages[1], return_messages[2]])
+
+                    break
 
 
 def screenshot_db(csv_out_name, make_csv, pics_out_path, screenshot_method, timeout_duration):
@@ -109,7 +132,7 @@ def screenshot_db(csv_out_name, make_csv, pics_out_path, screenshot_method, time
         csv_file_out.close()
 
 
-def take_screenshot(archive_id, url_id, url, pics_out_path, screenshot_method, timeout_duration):
+def take_screenshot(multiple_url_details, pics_out_path, screenshot_method, timeout_duration):
     """Calls the function or command to take a screenshot
 
     Parameters
@@ -132,41 +155,75 @@ def take_screenshot(archive_id, url_id, url, pics_out_path, screenshot_method, t
     str(succeed) : str
         A code indicating whether how successful the screenshot was
 
+    Reference
+    ---------
+    https://stackoverflow.com/questions/30361824/asynchronous-exception-handling-in-python
+
     """
 
-    site_status, site_message = check_site_availability(url)
-    if site_status == "FAIL":
-        return site_status, site_message, "Screenshot unsuccessful"
+    url_status_dict = {}                # maps each url_id to the site messages
+    multiple_url_details_temp = multiple_url_details[:]  # the list to be passed into puppeteer_screenshot
 
-    if screenshot_method == 0:
-        return site_status, site_message, chrome_screenshot(pics_out_path, archive_id, url_id, url, timeout_duration)
-    elif screenshot_method == 2:
-        return site_status, site_message, cutycapt_screenshot(pics_out_path, archive_id, url_id, url, timeout_duration)
-    elif screenshot_method == 1:
-        try:
-            asyncio.get_event_loop().run_until_complete(
-                puppeteer_screenshot(archive_id, url_id, url, pics_out_path, timeout_duration))
-            logging.info("Screenshot successful")
-            print("Screenshot successful")
-            return site_status, site_message, "Screenshot successful"
-        except errors.TimeoutError as e:
-            print(e)
-            logging.info(e)
-            return site_status, site_message, e
-        except errors.NetworkError as e:
-            print(e)
-            logging.info(e)
-            return site_status, site_message, e
-        except errors.PageError as e:
-            print(e)
-            logging.info(e)
-            return site_status, site_message, e
-        except Exception as e:
-            print(e)
-            logging.info(e)
-            return site_status, site_message, e
+    if screenshot_method == 1:
+        for id_list in multiple_url_details:
+            url_id = id_list[1]
+            url = id_list[2]
 
-    return None, None, None  # assumes the user entered 0,1,2 as method
+            print("\nurl #{0} {1}".format(url_id, url))
+            logging.info("url #{0} {1}".format(url_id, url))
+
+            site_status, site_message = check_site_availability(url)
+            if site_status == "FAIL":           # if the url cannot be reached
+                url_status_dict[url_id] = [site_status, site_message, "Screenshot unsuccessful"]
+                multiple_url_details_temp.remove(id_list)       # remove cuz this url does not need screenshot taken
+                logging.info(site_status + site_message)
+                print("Screenshot unsuccessful")
+            else:    # list does not include successfulness cuz it will be determined by puppeteer_screenshot
+                url_status_dict[url_id] = [site_status, site_message]
+
+        if len(multiple_url_details_temp) == 0:     # if none of the urls can be reached
+            return url_status_dict     # then dont need to bother trying to take screenshots
+
+        loop = asyncio.get_event_loop()
+        task = asyncio.gather(*(puppeteer_screenshot(details, pics_out_path, timeout_duration)
+                                for details in multiple_url_details_temp), loop=None, return_exceptions=True)
+        result = loop.run_until_complete(task)
+
+        for return_message in result:           # map the results to its respective url_id
+            url_id = return_message[0]
+            returned_error = return_message[1]
+            if type(errors.TimeoutError) == type(returned_error):
+                url_status_dict[url_id].append("Screenshot unsuccessful")
+                logging.info(str(returned_error))
+                print("Screenshot unsuccessful")
+            elif type(errors.NetworkError) == type(returned_error):
+                url_status_dict[url_id].append("Screenshot unsuccessful")
+                logging.info(str(returned_error))
+                print("Screenshot unsuccessful")
+            elif type(errors.PageError) == type(returned_error):
+                url_status_dict[url_id].append("Screenshot unsuccessful")
+                logging.info(str(returned_error))
+                print("Screenshot unsuccessful")
+            elif type(Exception) == type(returned_error):
+                url_status_dict[url_id].append("Screenshot unsuccessful")
+                logging.info(str(returned_error))
+                print("Screenshot unsuccessful")
+            else:
+                url_status_dict[url_id].append("Screenshot successful")
+                logging.info("Screenshot successful")
+                print("Screenshot successful")
+
+    return url_status_dict
+
+    # todo cutycapt and google-chrome
+
+
+        # if screenshot_method == 0:
+        #     chrome_screenshot(pics_out_path, archive_id, url_id, url, timeout_duration)
+        # elif screenshot_method == 2:
+        #     cutycapt_screenshot(pics_out_path, archive_id, url_id, url, timeout_duration)
+
+    # return site_status_list, site_message_list, screenshot_message_list
 
 
 def chrome_screenshot(pics_out_path, archive_id, url_id, url, timeout_duration):
@@ -207,7 +264,7 @@ def cutycapt_screenshot(pics_out_path, archive_id, url_id, url, timeout_duration
         return "Screenshot unsuccessful"
 
 
-async def puppeteer_screenshot(archive_id, url_id, url, pics_out_path, timeout_duration):
+async def puppeteer_screenshot(url_details, pics_out_path, timeout_duration):
     """Take screenshot using the pyppeteer package.
 
     Parameters
@@ -230,6 +287,7 @@ async def puppeteer_screenshot(archive_id, url_id, url, pics_out_path, timeout_d
     .. [2] https://github.com/ukwa/webrender-puppeteer/blob/6fcc719d64dc19a4929c02d3a445a8283bee5195/renderer.js
 
     """
+    archive_id, url_id, url = url_details[0], url_details[1], url_details[2],
 
     browser = await launch(headless=True, dumpio=True)
     page = await browser.newPage()
@@ -261,13 +319,15 @@ async def puppeteer_screenshot(archive_id, url_id, url, pics_out_path, timeout_d
             await browser.close()
         except:
             await browser.close()
-        raise e
+        # raise e
+        return url_id, e
 
     try:
         await page.close()
         await browser.close()
     except:
         await browser.close()
+    return url_id, None
 
 
 async def click_button(page, button_text):
@@ -384,6 +444,8 @@ def parse_args():
                                                    "0 for chrome, 1 for puppeteer, 2 for cutycapt")
     parser.add_argument("--timeout", type=str, help="(optional) Specify duration before timeout for each site, "
                                                     "in seconds, default 30 seconds")
+    parser.add_argument("--async", type=int, help="(optional) Specify the number of coroutines, "
+                                                  "default 1 coroutine, ")
 
     args = parser.parse_args()
 
@@ -406,6 +468,10 @@ def parse_args():
 
     pics_out_path = args.picsout + '/'
     screenshot_method = int(args.method)
+    if args.async is None:
+        async_num = 1
+    else:
+        async_num = args.async
 
     if args.csv is not None:
         csv_in_name = args.csv
@@ -430,7 +496,8 @@ def parse_args():
     else:
         timeout_duration = args.timeout
 
-    return csv_in_name, csv_out_name, pics_out_path, screenshot_method, use_db, use_csv, make_csv, timeout_duration
+    return csv_in_name, csv_out_name, pics_out_path, screenshot_method, \
+           use_db, use_csv, make_csv, timeout_duration, async_num
 
 
 def connect_sql(path):
@@ -468,13 +535,13 @@ def set_up_logging(pics_out_path):
 
 
 def main():
-    csv_in_name, csv_out_name, pics_out_path, screenshot_method, use_db, use_csv, make_csv, timeout_duration \
+    csv_in_name, csv_out_name, pics_out_path, screenshot_method, use_db, use_csv, make_csv, timeout_duration, async_num\
         = parse_args()
     set_up_logging(pics_out_path)
 
     print("Taking screenshots")
     if use_csv:
-        screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, timeout_duration)
+        screenshot_csv(csv_in_name, csv_out_name, pics_out_path, screenshot_method, timeout_duration, async_num)
     if use_db:
         screenshot_db(csv_out_name, make_csv, pics_out_path, screenshot_method, timeout_duration)
 
