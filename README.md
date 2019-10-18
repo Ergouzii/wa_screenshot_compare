@@ -52,8 +52,10 @@ Arguments:
 * banner - (optional) Include to generate URLs that has the banner, default removes banner.
 
 ### current_screenshot.py
-This program takes the CSV or DB with the current website URLS and takes screenshots
-> The output CSV will have four columns, archive ID, URL ID, success code, and URL.
+This program takes the CSV or DB with the current website URLS and takes screenshots. The output CSV will have six columns: archive ID, URL ID, URL, site status, site message, and screenshot message: 
+* site_status - Contains 'LIVE' if the URL can be reached or redirects, and 'FAIL' if the URL could not be reached (ex. 404).
+* site_message - A reason on why site_status was 'LIVE' or 'FAIL'. Such as 'Redirected to http://......' or 'HTTPError: 404'.
+* screenshot_message - a message on whether the screenshot was successful. If site_status is 'FAIL' then screenshot_message is automatically 'Screenshot unsuccessful'. Another common message is 'Navigation Timeout Exceeded'.
 > As of right now, method=1 takes the most consistent screenshots.
 
 Command syntax: 
@@ -69,8 +71,10 @@ Arguments:
 * timeout - (optional) Specify duration before timeout for each site, in seconds, default 30 seconds.
 
 ### archive_screenshot.py
-This program takes the CSV or DB with the archive website URLS and takes screenshots.
-> the output CSV will have five columns, archive ID, URL ID, capture date, success code, and URL
+This program takes the CSV or DB with the archive website URLS and takes screenshots. The output CSV will have seven columns, archive ID, URL ID, capture date, URL, site status, site message, and screenshot message.
+* site_status - Contains 'LIVE' if the URL can be reached or redirects, and 'FAIL' if the URL could not be reached (ex. 404).
+* site_message - A reason on why site_status was 'LIVE' or 'FAIL'. Such as 'Redirected to http://......' or 'HTTPError: 404'.
+* screenshot_message - a message on whether the screenshot was successful. If site_status is 'FAIL' then screenshot_message is automatically 'Screenshot unsuccessful'. Another common message is 'Navigation Timeout Exceeded'.
 > As of right now, method=1 takes the most consistent screenshots.
 
 Command syntax:
@@ -134,9 +138,22 @@ Arguments:
 ### similarity_measures.py
 Contains functions used by calculate_similarity.py which will be used to calculate the scores.
 
-## Authors
-todo
+### crop_banners_from_images.py
+This program crops banners from website images. The user must supply the dimensions of the banner. For example, in order to remove banner from British Library UK OA collection, with screenshots that measure 1024 x 768, use the following dimensions: (0,43,1024,768). The resulting image will have the banner cropped and will be 1024 x 725. The Pillow imaging library must be installed in Python. For more information on this library, see: https://auth0.com/blog/image-processing-in-python-with-pillow/
 
+command syntax:
+```
+python3 crop_banners_from_images.py --input_dir pics_archived_banners/ --output_dir pics_archived_no_banners/ --new_dimensions=0,43,1024,768
+```
+Arguments:
+* input_dir - directory of screenshots with banners that need to be removed
+* output_dir - directory where screenshots without the banners will be saved
+* new_dimensions - dimensions of the banner to remove
+
+
+## Authors
+* **Brenda Reyes Ayala** 
+* **James Sun**
 ## License
 todo
 
